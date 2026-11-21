@@ -1,0 +1,93 @@
+name: Release
+
+# The CLI is released with the app's version (2026-11-21): once an app release (profilement-app/app) has been
+# deployed, the app's workflow sends the event "app-release" with its tag. This workflow then checks and tests the
+# CLI's master and only if everything passes builds the binaries for Linux, macOS and Windows (amd64, arm64), their
+# SHA-256 sums, and a release with exactly the app's tag. A tag the CLI has already is not released again.
+# By hand: "Run workflow" with the version (the app's tag).
+on:
+  repository_dispatch:
+    types: [app-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to release (the app's tag, e.g. 1.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # Never written into a script directly (a value of the event is data, not code).
+      REQUESTED: ${{ github.event.client_payload.version || inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Version
+        id: version
+        run: |
+          if [[ ! "${REQUESTED}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::No version like 1.2.3 given: ${REQUESTED}"
+            exit 1
+          fi
+          echo "tag=${REQUESTED}" >> "$GITHUB_OUTPUT"
+          echo "version=${REQUESTED#v}" >> "$GITHUB_OUTPUT"
+          if gh release view "${REQUESTED}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "Release ${REQUESTED} exists already: nothing to do."
+            echo "exists=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.version.outputs.exists != 'yes'
+        with:
+          go-version-file: go.mod
+
+      # The release only when everything passes.
+      - name: Formatting
+        if: steps.version.outputs.exists != 'yes'
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Vet
+        if: steps.version.outputs.exists != 'yes'
+        run: go vet ./...
+
+      - name: Tests
+        if: steps.version.outputs.exists != 'yes'
+        run: go test ./...
+
+      - name: Build
+        if: steps.version.outputs.exists != 'yes'
+        env:
+          CGO_ENABLED: '0'
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            binary="profilement"
+            if [[ "${os}" == "windows" ]]; then binary="profilement.exe"; fi
+            GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "build/${os}-${arch}/${binary}" ./cmd/profilement
+            if [[ "${os}" == "windows" ]]; then
+              (cd "build/${os}-${arch}" && zip -q "../../dist/profilement-${VERSION}-${os}-${arch}.zip" "${binary}")
+            else
+              tar -C "build/${os}-${arch}" -czf "dist/profilement-${VERSION}-${os}-${arch}.tar.gz" "${binary}"
+            fi
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish
+        if: steps.version.outputs.exists != 'yes'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "${TAG}" dist/* --repo "${GITHUB_REPOSITORY}" --target "$(git rev-parse HEAD)" \
+            --title "${TAG}" --notes "Released with Profilement ${TAG}. Binaries for Linux, macOS and Windows (amd64, arm64); check them against SHA256SUMS."
