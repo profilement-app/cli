@@ -1,0 +1,15 @@
+{
+  "name": "profilement",
+  "description": "Profilement's plugins for Claude Code",
+  "owner": {
+    "name": "Profilement",
+    "url": "https://www.profilement.com"
+  },
+  "plugins": [
+    {
+      "name": "profilement",
+      "source": "./claude-plugin",
+      "description": "Add or update a project in Profilement from its folder: the profilement CLI finds what the files name, Claude what they do not, you check everything in Profilement."
+    }
+  ]
+}

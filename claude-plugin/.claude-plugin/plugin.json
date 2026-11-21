@@ -1,0 +1,13 @@
+{
+  "name": "profilement",
+  "displayName": "Profilement",
+  "description": "Add or update a project in Profilement from its folder: the profilement CLI finds the tools, frameworks and libraries the files name, Claude adds what they do not (services, integrations, platforms) and the Git topics you choose; you check everything on Profilement's review page.",
+  "author": {
+    "name": "Profilement",
+    "url": "https://www.profilement.com"
+  },
+  "homepage": "https://github.com/profilement-app/cli",
+  "repository": "https://github.com/profilement-app/cli",
+  "license": "MIT",
+  "keywords": ["profilement", "projects", "skills", "cv", "tech stack"]
+}

@@ -45,8 +45,33 @@ against `SHA256SUMS`, and put `profilement` on your `PATH`.
 
 4. Open the printed review page, tick what applies, and apply it.
 
-Options of `add` and `update`: `--name NAME` (add), `--project CODE` (update), `--no-git`, `--author EMAIL`, `--yes`
-(ask nothing; the suggested topics). `profilement scan --json` prints the terms as JSON.
+Options of `add` and `update`: `--name NAME` (add), `--project CODE` (update), `--no-git`, `--author EMAIL`,
+`--topics LIST` (the topics without asking: `1,3-5`, `all`, `none`, `suggested`), `--extra FILE` (more terms, a JSON
+list of `{"name", "version", "file", "dev"}`), `--yes` (ask nothing; the suggested topics), `--json` (the answer as
+JSON). `profilement scan --json`, `profilement topics --json` and `profilement projects --json` print what they list
+as JSON.
+
+## Claude Code plugin
+
+The plugin lets Claude do the same from a Claude Code session in the project's folder, and add what files alone
+cannot tell: the external services, integrated systems, platforms and protocols the code shows (Stripe, SAP, AWS,
+OAuth 2.0 …). It uses the CLI above (install and `profilement login` first); Claude never sees your token.
+
+```
+/plugin install profilement --marketplace profilement-app/cli
+```
+
+(or `/plugin marketplace add profilement-app/cli`, then `/plugin install profilement@profilement`). Then, in a
+project's folder:
+
+```
+/profilement:add [name]          propose this folder as a new project
+/profilement:update [code]       propose an update of one of your projects
+```
+
+Claude runs `profilement scan`, searches the project for more, shows you your Git topics to choose from, summarizes
+and asks before sending, and gives you the review page's address. The plugin lives in `claude-plugin/`, its
+marketplace in `.claude-plugin/marketplace.json`; check both with `claude plugin validate .`.
 
 ## Security
 
