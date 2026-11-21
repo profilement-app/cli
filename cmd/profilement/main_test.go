@@ -308,6 +308,106 @@ func TestTheChosenGitTopicsBecomeTasks(t *testing.T) {
 	}
 }
 
+func TestExtraTermsAndPresetTopicsSendWithoutQuestions(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	isolated(t)
+	fake := newProfilement(t)
+	signedInTo(t, fake)
+	folder := project(t)
+	git := func(arguments ...string) {
+		command := exec.Command("git", append([]string{"-C", folder}, arguments...)...)
+
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", arguments, err, output)
+		}
+	}
+
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "anna@example.com")
+	git("config", "user.name", "Anna")
+	git("add", "composer.json")
+	git("commit", "-q", "-m", "SHOP-12: rework checkout")
+	git("commit", "-q", "--allow-empty", "-m", "update admin grids")
+
+	// The topics as JSON, numbered as add offers them.
+	out, err := execute("", "topics", folder, "--json")
+	var topics []topicEntry
+
+	if err != nil || json.Unmarshal([]byte(out), &topics) != nil || len(topics) != 2 || topics[0].Number != 1 {
+		t.Fatalf("topics: %q, %v", out, err)
+	}
+
+	suggested := map[bool]string{}
+
+	for _, topic := range topics {
+		suggested[topic.Suggested] = topic.Title
+	}
+
+	// Terms found beyond the files: one the scan has already (kept as found), one it has not.
+	extra := filepath.Join(t.TempDir(), "extra.json")
+
+	if err := os.WriteFile(extra, []byte(`[{"name": "laravel", "version": "9"}, {"name": "Stripe", "file": "config/services.php"}, {"name": " "}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the topic that is not suggested, by its number; the answer as JSON.
+	number := "1"
+
+	if topics[0].Suggested {
+		number = "2"
+	}
+
+	out, err = execute("", "add", folder, "--name", "Shop", "--extra", extra, "--topics", number, "--yes", "--json")
+
+	if err != nil || len(fake.proposals) != 1 {
+		t.Fatalf("add: %q, %v", out, err)
+	}
+
+	proposal := fake.proposals[0]
+	byName := map[string]api.Term{}
+
+	for _, term := range proposal.Terms {
+		byName[strings.ToLower(term.Name)] = term
+	}
+
+	if byName["laravel"].Version != "13.0" || byName["stripe"].File != "config/services.php" || len(proposal.Tasks) != 1 || proposal.Tasks[0].Title != suggested[false] {
+		t.Errorf("proposal %+v", proposal)
+	}
+
+	if !strings.Contains(out, `"review_url":"`) {
+		t.Errorf("no JSON answer: %q", out)
+	}
+
+	// "suggested" and a wrong number.
+	if _, err = execute("", "add", folder, "--name", "Shop", "--topics", "suggested", "--yes"); err != nil || len(fake.proposals[1].Tasks) != 1 || fake.proposals[1].Tasks[0].Title != suggested[true] {
+		t.Errorf("suggested: %v %+v", err, fake.proposals[1].Tasks)
+	}
+
+	if _, err = execute("", "add", folder, "--name", "Shop", "--topics", "9", "--yes"); err == nil || !strings.Contains(err.Error(), "--topics") {
+		t.Errorf("wrong topic: %v", err)
+	}
+}
+
+func TestProjectsAreListedForAChoice(t *testing.T) {
+	isolated(t)
+	fake := newProfilement(t)
+	signedInTo(t, fake)
+
+	out, err := execute("", "projects", "--json")
+	var projects []api.Project
+
+	if err != nil || json.Unmarshal([]byte(out), &projects) != nil || len(projects) != 2 || projects[1].Code != "shop" {
+		t.Fatalf("projects: %q, %v", out, err)
+	}
+
+	if out, _ = execute("", "projects"); !strings.Contains(out, "shop  Globex · Shop") {
+		t.Errorf("projects: %q", out)
+	}
+}
+
 func TestScanSendsNothingAndPrintsJson(t *testing.T) {
 	isolated(t)
 	fake := newProfilement(t)

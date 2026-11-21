@@ -32,6 +32,8 @@ Usage:
   profilement logout                                 forget the token
   profilement whoami                                 show the account the token belongs to
   profilement scan [FOLDER] [--json]                 show what would be sent (nothing is sent)
+  profilement topics [FOLDER] [--json]               list your Git topics, numbered as add and update offer them
+  profilement projects [--json]                      list the projects update may name
   profilement add [FOLDER] [--name NAME]             propose a new project
   profilement update [FOLDER] [--project CODE]       propose an update of one of your projects
   profilement version
@@ -39,7 +41,10 @@ Usage:
 Options of add and update:
   --no-git           send no Git topics
   --author EMAIL     whose commits become topics (default: git config user.email)
+  --topics LIST      the topics to send without asking: numbers like 1,3-5, "all", "none", "suggested"
+  --extra FILE       more terms to send, a JSON list like [{"name": "Stripe", "version": "", "file": "config/services.php"}]
   --yes              ask nothing: the suggested topics, no questions (update needs --project once)
+  --json             print the answer (review address) as JSON
 
 Nothing is added to a project before you check it on the review page whose address is printed.
 The settings are kept in %s (or $PROFILEMENT_CONFIG); $PROFILEMENT_URL and $PROFILEMENT_TOKEN override them.
@@ -76,6 +81,10 @@ func run(arguments []string, in io.Reader, out io.Writer) error {
 		return whoami(out)
 	case "scan":
 		return scanCommand(rest, out)
+	case "topics":
+		return topicsCommand(rest, out)
+	case "projects":
+		return projectsCommand(rest, out)
 	case "add", "update":
 		return send(command, rest, ask, out)
 	}
@@ -290,6 +299,164 @@ func scanCommand(arguments []string, out io.Writer) error {
 	return nil
 }
 
+// topicEntry is a topic as `topics --json` lists it.
+type topicEntry struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	Kind      string `json:"kind"`
+	Suggested bool   `json:"suggested"`
+	Commits   int    `json:"commits"`
+	Start     string `json:"start"`
+	End       string `json:"end"`
+}
+
+// offeredTopics are the author's newest topics, as add and update number them.
+func offeredTopics(folder, author string) ([]gitlog.Topic, string, error) {
+	if !gitlog.IsRepository(folder) {
+		return nil, author, nil
+	}
+
+	if author == "" {
+		author = gitlog.UserEmail(folder)
+	}
+
+	commits, err := gitlog.Commits(folder, author)
+
+	if err != nil {
+		return nil, author, err
+	}
+
+	topics := gitlog.Topics(commits)
+
+	if len(topics) > maxTopics {
+		topics = topics[:maxTopics]
+	}
+
+	return topics, author, nil
+}
+
+func topicsCommand(arguments []string, out io.Writer) error {
+	flags := flag.NewFlagSet("topics", flag.ContinueOnError)
+	asJSON := flags.Bool("json", false, "print the topics as JSON")
+	authorFlag := flags.String("author", "", "whose commits become topics")
+
+	if err := parseInterspersed(flags, arguments); err != nil {
+		return err
+	}
+
+	folder, err := folderOf(flags)
+
+	if err != nil {
+		return err
+	}
+
+	topics, author, err := offeredTopics(folder, *authorFlag)
+
+	if err != nil {
+		return err
+	}
+
+	entries := make([]topicEntry, 0, len(topics))
+
+	for index, topic := range topics {
+		entries = append(entries, topicEntry{Number: index + 1, Title: topic.Title, Kind: topic.Kind, Suggested: topic.Suggested, Commits: len(topic.Commits), Start: topic.Start, End: topic.End})
+	}
+
+	if *asJSON {
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+
+		return encoder.Encode(entries)
+	}
+
+	if len(entries) == 0 {
+		fmt.Fprintf(out, "No commits of %s here.\n", orDash(author))
+
+		return nil
+	}
+
+	listTopics(out, topics)
+
+	return nil
+}
+
+func projectsCommand(arguments []string, out io.Writer) error {
+	flags := flag.NewFlagSet("projects", flag.ContinueOnError)
+	asJSON := flags.Bool("json", false, "print the projects as JSON")
+
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+
+	settings, err := signedIn()
+
+	if err != nil {
+		return err
+	}
+
+	projects, err := client(settings).Projects()
+
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+
+		return encoder.Encode(projects)
+	}
+
+	for _, project := range projects {
+		fmt.Fprintf(out, "%s  %s · %s  (%s – %s)\n", project.Code, project.Customer.Name, project.Name, orDash(project.StartsOn), orDash(project.EndsOn))
+	}
+
+	return nil
+}
+
+// extraTerms reads the terms of --extra: a JSON list of terms.
+func extraTerms(path string) ([]api.Term, error) {
+	content, err := os.ReadFile(path)
+
+	if err != nil {
+		return nil, err
+	}
+
+	var terms []api.Term
+
+	if err := json.Unmarshal(content, &terms); err != nil {
+		return nil, fmt.Errorf("%s is no JSON list of terms: %w", path, err)
+	}
+
+	var kept []api.Term
+
+	for _, term := range terms {
+		if term.Name = strings.TrimSpace(term.Name); term.Name != "" {
+			kept = append(kept, term)
+		}
+	}
+
+	return kept, nil
+}
+
+// withExtra adds the extra terms the scan did not find (by name, case aside; a found term keeps its own data).
+func withExtra(terms, extra []api.Term) []api.Term {
+	known := map[string]bool{}
+
+	for _, term := range terms {
+		known[strings.ToLower(term.Name)] = true
+	}
+
+	for _, term := range extra {
+		if !known[strings.ToLower(term.Name)] {
+			known[strings.ToLower(term.Name)] = true
+			terms = append(terms, term)
+		}
+	}
+
+	return terms
+}
+
 func printTerms(out io.Writer, terms []scan.Term) {
 	var used, dev []string
 
@@ -320,7 +487,10 @@ func send(command string, arguments []string, ask *prompt.Prompter, out io.Write
 	projectCode := flags.String("project", "", "the code of the project to update (update)")
 	noGit := flags.Bool("no-git", false, "send no Git topics")
 	author := flags.String("author", "", "whose commits become topics")
+	topicsChoice := flags.String("topics", "", "the topics to send without asking")
+	extraFile := flags.String("extra", "", "a JSON file with more terms")
 	yes := flags.Bool("yes", false, "ask nothing")
+	asJSON := flags.Bool("json", false, "print the answer as JSON")
 
 	if err := parseInterspersed(flags, arguments); err != nil {
 		return err
@@ -330,6 +500,14 @@ func send(command string, arguments []string, ask *prompt.Prompter, out io.Write
 
 	if err != nil {
 		return err
+	}
+
+	var extra []api.Term
+
+	if *extraFile != "" {
+		if extra, err = extraTerms(*extraFile); err != nil {
+			return err
+		}
 	}
 
 	settings, err := signedIn()
@@ -378,10 +556,16 @@ func send(command string, arguments []string, ask *prompt.Prompter, out io.Write
 		proposal.Terms = append(proposal.Terms, api.Term(term))
 	}
 
+	if len(extra) > 0 {
+		before := len(proposal.Terms)
+		proposal.Terms = withExtra(proposal.Terms, extra)
+		fmt.Fprintf(out, "and %d more from %s.\n", len(proposal.Terms)-before, *extraFile)
+	}
+
 	if !*noGit && gitlog.IsRepository(folder) {
 		proposal.Source["remote"], proposal.Source["branch"] = gitlog.Remote(folder), gitlog.Branch(folder)
 
-		if proposal.Tasks, err = chooseTopics(folder, *author, *yes, ask, out); err != nil {
+		if proposal.Tasks, err = chooseTopics(folder, *author, *topicsChoice, *yes, ask, out); err != nil {
 			return err
 		}
 	}
@@ -407,6 +591,10 @@ func send(command string, arguments []string, ask *prompt.Prompter, out io.Write
 		if err := settings.Save(); err != nil {
 			fmt.Fprintln(out, "(The folder's project could not be remembered:", err.Error()+")")
 		}
+	}
+
+	if *asJSON {
+		return json.NewEncoder(out).Encode(sent)
 	}
 
 	fmt.Fprintf(out, "\nSent. Check and apply it here — nothing is added before:\n  %s\n", sent.ReviewURL)
@@ -487,41 +675,13 @@ func chooseProject(profilement *api.Client, settings *config.Config, folder, cod
 	}
 }
 
-// chooseTopics groups the author's commits into topics and asks which become tasks.
-func chooseTopics(folder, author string, yes bool, ask *prompt.Prompter, out io.Writer) ([]api.Task, error) {
-	if author == "" {
-		author = gitlog.UserEmail(folder)
-	}
-
-	commits, err := gitlog.Commits(folder, author)
-
-	if err != nil {
-		fmt.Fprintln(out, "\nGit topics left out:", err)
-
-		return nil, nil
-	}
-
-	topics := gitlog.Topics(commits)
-
-	if len(topics) > maxTopics {
-		topics = topics[:maxTopics]
-	}
-
-	if len(topics) == 0 {
-		fmt.Fprintf(out, "\nNo commits of %s in the Git history.\n", author)
-
-		return nil, nil
-	}
-
-	var suggested []int
-	fmt.Fprintf(out, "\nYour commits (%s) grouped into topics; only the topics you choose are sent, as tasks:\n", author)
-
+// listTopics prints the numbered topics, the suggested ones marked *.
+func listTopics(out io.Writer, topics []gitlog.Topic) {
 	for index, topic := range topics {
 		mark := " "
 
 		if topic.Suggested {
 			mark = "*"
-			suggested = append(suggested, index)
 		}
 
 		commits := fmt.Sprintf("%d commits", len(topic.Commits))
@@ -538,10 +698,46 @@ func chooseTopics(folder, author string, yes bool, ask *prompt.Prompter, out io.
 
 		fmt.Fprintf(out, "%3d)%s %s  (%s, %s)\n", index+1, mark, topic.Title, commits, period)
 	}
+}
 
+// chooseTopics groups the author's commits into topics and asks which become tasks; preset ("1,3-5", "all", "none",
+// "suggested") chooses without asking.
+func chooseTopics(folder, author, preset string, yes bool, ask *prompt.Prompter, out io.Writer) ([]api.Task, error) {
+	topics, author, err := offeredTopics(folder, author)
+
+	if err != nil {
+		fmt.Fprintln(out, "\nGit topics left out:", err)
+
+		return nil, nil
+	}
+
+	if len(topics) == 0 {
+		fmt.Fprintf(out, "\nNo commits of %s in the Git history.\n", orDash(author))
+
+		return nil, nil
+	}
+
+	var suggested []int
+
+	for index, topic := range topics {
+		if topic.Suggested {
+			suggested = append(suggested, index)
+		}
+	}
+
+	fmt.Fprintf(out, "\nYour commits (%s) grouped into topics; only the topics you choose are sent, as tasks:\n", author)
+	listTopics(out, topics)
 	chosen := suggested
 
-	if !yes {
+	if preset != "" {
+		if strings.EqualFold(strings.TrimSpace(preset), "suggested") {
+			preset = ""
+		}
+
+		if chosen, err = prompt.Selection(preset, len(topics), suggested); err != nil {
+			return nil, fmt.Errorf("--topics: %w", err)
+		}
+	} else if !yes {
 		for {
 			answer, err := ask.Ask("Topics as tasks — numbers like 1,3-5, \"all\", \"none\"; empty: the ones marked *", "")
 
