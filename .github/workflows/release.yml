@@ -27,7 +27,7 @@ jobs:
       REQUESTED: ${{ github.event.client_payload.version || inputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
 
@@ -45,10 +45,11 @@ jobs:
             echo "exists=yes" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         if: steps.version.outputs.exists != 'yes'
         with:
           go-version-file: go.mod
+          cache: false
 
       # The release only when everything passes.
       - name: Formatting
